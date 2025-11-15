@@ -4,7 +4,7 @@
 # nuitka-project: --lto=yes
 # nuitka-project: --clang
 # nuitka-project: --assume-yes-for-downloads
-# not-nuitka-project: --windows-console-mode=disable
+# nuitka-project: --windows-console-mode=disable
 # nuitka-project: --windows-icon-from-ico=src/icons/WebX.ico
 
 import os
@@ -17,7 +17,6 @@ import subprocess
 import portalocker
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from typing import Literal
 from PySide6 import (
     QtCore,
     QtWidgets,
@@ -28,31 +27,37 @@ from PySide6 import (
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu"
 
 app = QtWidgets.QApplication(sys.argv)
-THEME = 'dark' if app.palette().color(QtGui.QPalette.ColorRole.Window).value()<128 else 'light'
+bookmarks_window = history_window = permissions_window = check_updates_window = None
 
+THEME = 'dark' if app.palette().color(QtGui.QPalette.ColorRole.Window).value()<128 else 'light'
 WEBX = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'icons', 'WebX.png')
 ICONS = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'icons', THEME)
 HTML = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'html')
-DATA = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data')
+if '__compiled__' in globals():
+    DATA = os.path.join(os.getenv('AppData'), 'WebX')
+else:
+    DATA = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data')
 
 VERSION = 0.1
 LATEST_VERSION_URL = "https://raw.githubusercontent.com/not-immortalcoding/webx/refs/heads/main/latest_version.txt"
-
-BUILTIN_PATHS: dict[QtCore.QUrl, str] = {
+BUILTIN_PATHS = {
     QtCore.QUrl.fromLocalFile(os.path.join(HTML, 'home.html')): '',
     QtCore.QUrl.fromLocalFile(os.path.join(HTML, 'snake.html')): 'webx://snake'
 }
 
-bookmarks_window = None
-history_window = None
-permissions_window = None
-   
-with open(os.path.join(DATA, 'bookmarks.csv'), 'r', newline='', encoding='utf-8') as f:
-    bookmarks = list(csv.reader(f))[1:]
-with open(os.path.join(DATA, 'history.csv'), 'r', newline='', encoding='utf-8') as f:
-    history = list(csv.reader(f))[1:][::-1]
-with open(os.path.join(DATA, 'permissions.csv'), 'r', newline='', encoding='utf-8') as f:
-    permissions = list(csv.reader(f))[1:]
+
+def upgrade():
+    subprocess.Popen([os.path.join(os.path.dirname(os.path.realpath(__file__)), 'upgrade.exe')])
+    sys.exit()
+
+
+def refresh_permissions():
+    global permissions
+    permissions[:] = [
+        [p.origin().toString(), p.permissionType().name, p.state().name]
+        for p in profile.listAllPermissions()
+    ]
+    if permissions_window: permissions_window.refresh_data()
 
 
 def is_connected():
@@ -63,37 +68,80 @@ def is_connected():
         return False
 
 
+def byte_to_string(byte):
+    match byte:
+        case 0:
+            return "?"
+        case b if b < 1024:
+            return f"{b} B"
+        case b if b < 1024 ** 2:
+            return f"{b / 1024:.2f} KB"
+        case b if b < 1024 ** 3:
+            return f"{b / (1024 ** 2):.2f} MB"
+        case b:
+            return f"{b / (1024 ** 3):.2f} GB"
+
+
+def about():
+    about_window = QtWidgets.QMessageBox()
+    about_window.setWindowTitle("About WebX")
+    about_window.setText('\n'.join([
+        f"WebX Version {VERSION}",
+        "",
+        "© Immortal Coding. All rights reserved.",
+    ]))
+    about_window.setIcon(QtWidgets.QMessageBox.Icon.Information)
+    about_window.setWindowIcon(QtGui.QIcon(WEBX))
+    about_window.exec()
+
+
 def write(data=None):
     if data is bookmarks:
-        with open(os.path.join(DATA, 'bookmarks.csv'), 'w', newline='', encoding='utf-8') as file:
-            w = csv.writer(file)
+        with open(os.path.join(DATA, 'bookmarks.csv'), 'w', newline='', encoding='utf-8') as f:
+            w = csv.writer(f)
             w.writerow(['Name', 'Url'])
             w.writerows(bookmarks)
-        if bookmarks_window: bookmarks_window.refresh()
+        if bookmarks_window: bookmarks_window.refresh_data()
     elif data is history:
-        with open(os.path.join(DATA, 'history.csv'), 'w', newline='', encoding='utf-8') as file:
-            w = csv.writer(file)
+        with open(os.path.join(DATA, 'history.csv'), 'w', newline='', encoding='utf-8') as f:
+            w = csv.writer(f)
             w.writerow(['Title', 'Url'])
             w.writerows(history[::-1])
-        if history_window: history_window.refresh()
-    elif data is permissions:
-        with open(os.path.join(DATA, 'permissions.csv'), 'w', newline='', encoding='utf-8') as file:
-            w = csv.writer(file)
-            w.writerow(['Origin', 'Permission', 'Granted'])
-            w.writerows(permissions)
-        if permissions_window: permissions_window.refresh()
+        if history_window: history_window.refresh_data()
     for w in QtWidgets.QApplication.topLevelWidgets():
-        if isinstance(w, MainWindow) and data in (bookmarks, history):
+        if isinstance(w, MainWindow):
             w.update_menu_items(data)
 
 
-def byte_to_string(byte):
-    match byte:
-        case 0: return "?"
-        case b if b < 1024: return f"{b} B"
-        case b if b < 1024 ** 2: return f"{b / 1024:.2f} KB"
-        case b if b < 1024 ** 3: return f"{b / (1024 ** 2):.2f} MB"
-        case b: return f"{b / (1024 ** 3):.2f} GB"
+def download_file(item):
+    def create_download_window():
+        download_window = DownloadWindow(name, size)
+        item.receivedBytesChanged.connect(lambda: download_window.update_size(item.receivedBytes()))
+        item.isFinishedChanged.connect(lambda: download_window.set_done())
+
+    name = item.suggestedFileName()
+    size = item.totalBytes()
+    dialog = QtWidgets.QMessageBox()
+    dialog.setIcon(QtWidgets.QMessageBox.Icon.Question)
+    dialog.setWindowIcon(QtGui.QIcon(WEBX))
+    dialog.setWindowTitle(f"Download File: {name}")
+    dialog.setText(f"What would you like to do with {name} (Size: {byte_to_string(size)})")
+
+    dialog.addButton("Save", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
+    dialog.addButton("Save As", QtWidgets.QMessageBox.ButtonRole.ActionRole)
+    dialog.addButton("Cancel", QtWidgets.QMessageBox.ButtonRole.RejectRole)
+    dialog.exec()
+
+    match dialog.clickedButton().text():
+        case "Save":
+            item.accept()
+            create_download_window()
+        case "Save As":
+            folder = QtWidgets.QFileDialog.getExistingDirectory(dialog, "Save To", item.downloadDirectory())
+            if folder:
+                item.setDownloadDirectory(folder)
+                item.accept()
+                create_download_window()
 
 
 class Signals(QtCore.QObject):
@@ -122,7 +170,7 @@ class CheckUpdateWindow(QtWidgets.QWidget):
         self.upgrade_button = QtWidgets.QPushButton("Upgrade")
         self.done = False
         self.label.setFont(QtGui.QFont(QtGui.QFont().family(), 12, QtGui.QFont.Weight.Medium, False))
-        self.upgrade_button.clicked.connect(self.upgrade)
+        self.upgrade_button.clicked.connect(upgrade)
         self.root.addWidget(self.label)
         self.setLayout(self.root)
         self.setWindowFlags(QtCore.Qt.WindowType.WindowMinimizeButtonHint)
@@ -142,11 +190,6 @@ class CheckUpdateWindow(QtWidgets.QWidget):
         self.show()
         self.adjustSize()
         self.done = True
-
-    @staticmethod
-    def upgrade():
-        subprocess.Popen([os.path.join(os.path.dirname(os.path.realpath(__file__)), 'upgrade.exe')])
-        sys.exit()
 
     def resizeEvent(self, _): self.adjustSize()
     def closeEvent(self, event): event.accept() if self.done else event.ignore()
@@ -235,34 +278,34 @@ class TableWindow(QtWidgets.QWidget):
             self.table.setHorizontalHeaderLabels(["Origin", "Permission", "State"])
             self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
             root.addWidget(clear)
-
         self.table.horizontalHeader().setMaximumSectionSize(200)
         self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
-        [self.table.setItem(row, col, QtWidgets.QTableWidgetItem(value)) for row, value in enumerate(data) for col, value in enumerate(value)]
+
+        self.refresh_data()
+
         self.setLayout(root)
         self.show()
 
-    def refresh(self):
+    def refresh_data(self):
         self.table.setRowCount(len(self.data))
-        [self.table.setItem(row, col, QtWidgets.QTableWidgetItem(value)) for row, value in enumerate(self.data) for col, value in enumerate(value)]
+        for r, row in enumerate(self.data):
+            for c, value in enumerate(row):
+                self.table.setItem(r, c, QtWidgets.QTableWidgetItem(value))
 
     def double_clicked(self):
-        self.destroy()
-        if self.data is permissions:
-            self.from_window.new_tab(self.table.item(self.table.currentRow(), 0).text())
-        else:
-            self.from_window.new_tab(self.table.item(self.table.currentRow(), 1).text())
+        item = self.table.item(self.table.currentRow(), 0 if self.data is permissions else 1)
+        if item:
+            self.destroy()
+            self.from_window.new_tab(item.text())
 
     def add_bookmark(self):
         name, ok = QtWidgets.QInputDialog.getText(self, "Bookmark Name", "Name:")
         if not name or not ok:
             return
-
-        url, ok = QtWidgets.QInputDialog.getText(self, "Bookmark Link", "Url:") if ok else None
-        if not url and not ok:
+        url, ok = QtWidgets.QInputDialog.getText(self, "Bookmark Link", "Url:")
+        if not url or not ok:
             return
-
         self.data.append([name, url])
         write(bookmarks)
 
@@ -271,39 +314,50 @@ class TableWindow(QtWidgets.QWidget):
         if row == -1:
             return
         self.table.removeRow(row)
-        del self.data[row]
-        write(self.data)
-        if self.data is permissions: self.from_window.profile.listAllPermissions()[row].reset()
+        if self.data is permissions:
+            profile.listAllPermissions()[row].reset()
+            refresh_permissions()
+        else:
+            del self.data[row]
+            write(self.data)
+            
 
     def clear_all(self):
         self.table.setRowCount(0)
-        self.data.clear()
-        write(self.data)
-        if self.data is permissions: [p.reset() for p in self.from_window.profile.listAllPermissions()]
+        if self.data is permissions:
+            [p.reset() for p in profile.listAllPermissions()]
+            refresh_permissions()
+        else:
+            self.data.clear()
+            write(self.data)
 
 
 class WebEnginePage(QtWebEngineCore.QWebEnginePage):
-    def __init__(self, window, *args):
-        super().__init__(*args)
+    def __init__(self, window, browser):
+        super().__init__(profile, browser)
 
         self.from_window = window
         self.permissionRequested.connect(self.permission_requested)
 
-    def createWindow(self, _type):
+    def createWindow(self, _):
         page = WebEnginePage(self, self.from_window)
-        page.urlChanged.connect(lambda url: self.from_window.new_tab(url))
+        page.urlChanged.connect(lambda url: self.from_window.new_tab(url.toString()))
         return page
     
-    def permission_requested(self, permission: QtWebEngineCore.QWebEnginePermission):
+    def permission_requested(self, permission):
+        name = permission.permissionType().name
+        origin = permission.origin().toString()
         clicked = QtWidgets.QMessageBox.question(
             self.from_window,
-            f"{permission.permissionType().name} Requested - {self.title()}",
-            f"Do you want to allow {permission.permissionType().name} for {permission.origin().toString()}?",
+            f"{name} Requested - {self.title()}",
+            f"Do you want to allow {name} for {origin}?",
             QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No
         )
-        permission.grant() if clicked == QtWidgets.QMessageBox.StandardButton.Yes else permission.deny()
-        permissions.append([permission.origin().toString(), permission.permissionType().name, permission.state().name])
-        write(permissions)
+        if clicked == QtWidgets.QMessageBox.StandardButton.Yes:
+            permission.grant()
+        else:
+            permission.deny()
+        refresh_permissions()
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -315,19 +369,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setWindowIcon(QtGui.QIcon(WEBX))
         self.setWindowTitle("WebX")
 
-        # Browser Profile
-        self.profile = QtWebEngineCore.QWebEngineProfile('WebX')
-        self.profile.downloadRequested.connect(self.download_file)
-        self.profile.setPersistentCookiesPolicy(QtWebEngineCore.QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
-        self.profile.setPersistentStoragePath(DATA)
-
         # Tabs
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.setTabsClosable(True)
         self.tabs.currentChanged.connect(lambda: self.update_url_bar(self.tabs.currentWidget().url(), self.tabs.currentWidget()))
         self.tabs.tabCloseRequested.connect(self.close_tab)
-        self.tabs.tabBarDoubleClicked.connect(self.maximize)
+        self.tabs.tabBarDoubleClicked.connect(lambda: self.showNormal() if self.isMaximized() else self.showMaximized())
         self.setCentralWidget(self.tabs)
 
         # New Tab Button
@@ -346,15 +394,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.navbar.setIconSize(QtCore.QSize(20, 20))
 
         # Back Button
-        back_button = QtGui.QAction(QtGui.QIcon(os.path.join(ICONS, 'back.png')), "Back", self)
+        back_button = QtGui.QAction(QtGui.QIcon(os.path.join(ICONS, 'back.png')), "Back", self, shortcut='Alt+Left')
         back_button.triggered.connect(lambda: self.tabs.currentWidget().back())
 
         # Forward Button
-        forward_button = QtGui.QAction(QtGui.QIcon(os.path.join(ICONS, 'forward.png')), "Forward", self)
+        forward_button = QtGui.QAction(QtGui.QIcon(os.path.join(ICONS, 'forward.png')), "Forward", self, shortcut='Alt+Right')
         forward_button.triggered.connect(lambda: self.tabs.currentWidget().forward())
 
         # Reload Button
-        reload_button = QtGui.QAction(QtGui.QIcon(os.path.join(ICONS, 'reload.png')), "Reload", self)
+        reload_button = QtGui.QAction(QtGui.QIcon(os.path.join(ICONS, 'reload.png')), "Reload", self, shortcut='Ctrl+R')
         reload_button.triggered.connect(lambda: self.tabs.currentWidget().reload())
 
         # Address Bar
@@ -369,6 +417,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.navbar.addAction(reload_button)
         self.navbar.addSeparator()
         self.navbar.addWidget(self.url_bar)
+
+        # Keyboard Shortcuts
+        close_tab = QtGui.QShortcut('Ctrl+W', self)
+        close_tab.activated.connect(self.close_tab)
+        focus_url_bar = QtGui.QShortcut('Ctrl+L', self)
+        focus_url_bar.activated.connect(lambda: self.url_bar.setFocus())
 
         # Menu Bar
         self.menubar = self.menuBar()
@@ -386,13 +440,11 @@ class MainWindow(QtWidgets.QMainWindow):
         open_file.triggered.connect(self.open_file)
 
         # New Window
-        new = QtGui.QAction('&New Window', self)
-        new.setShortcut('Ctrl+Shift+N')
+        new = QtGui.QAction('&New Window', self, shortcut='Ctrl+N')
         new.triggered.connect(MainWindow)
 
         # Exit App
-        exit_app = QtGui.QAction('&Exit', self)
-        exit_app.setShortcut('Ctrl+Shift+Q')
+        exit_app = QtGui.QAction('&Exit', self, shortcut='Ctrl+Shift+W')
         exit_app.triggered.connect(self.close)
 
         # Manage Permissions
@@ -401,7 +453,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Cookies
         remove_cookies = QtGui.QAction('&Clear Cookies', self)
-        remove_cookies.triggered.connect(lambda: self.profile.cookieStore().deleteAllCookies())
+        remove_cookies.triggered.connect(lambda: profile.cookieStore().deleteAllCookies())
 
         # Check for updates
         check_updates = QtGui.QAction('&Check for Updates', self)
@@ -411,7 +463,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # About App
         about_app = QtGui.QAction('&About WebX', self)
         about_app.setShortcut('F1')
-        about_app.triggered.connect(self.about)
+        about_app.triggered.connect(about)
 
         # Add actions to file menu
         self.file_menu.addAction(open_file)
@@ -434,40 +486,51 @@ class MainWindow(QtWidgets.QMainWindow):
         self.addToolBar(self.navbar)
         self.new_tab(url)
         self.show()
+        self.activateWindow()
 
     def new_tab(self, url=None):
         browser = QtWebEngineWidgets.QWebEngineView()
         idx = self.tabs.addTab(browser, "New Tab")
-        qurl = QtCore.QUrl(url)
-        self.tabs.setTabText(idx, url)
 
-        browser.setPage(WebEnginePage(self, self.profile, browser))
+        if url:
+            qurl = QtCore.QUrl(url)
+            qurl.setScheme(qurl.scheme() or 'http')
+            self.tabs.setTabText(idx, url)
+        else:
+            qurl = QtCore.QUrl.fromLocalFile(os.path.join(HTML, 'home.html'))
+            self.tabs.setTabText(idx, "WebX Homepage")
+
+        browser.setPage(WebEnginePage(self, browser))
         browser.urlChanged.connect(lambda qurl, b=browser: self.update_url_bar(qurl, b))
         browser.loadFinished.connect(lambda _, i=idx, b=browser:self.load_finished(i, b))
         browser.page().fullScreenRequested.connect(self.handle_fullscreen)
         browser.page().iconChanged.connect(lambda icon, i=idx: self.tabs.setTabIcon(i, icon))
         self.tabs.setCurrentIndex(idx)
 
-        browser.settings().setAttribute(QtWebEngineCore.QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, True)
-        browser.settings().setAttribute(QtWebEngineCore.QWebEngineSettings.WebAttribute.PluginsEnabled, True)
-        browser.settings().setAttribute(QtWebEngineCore.QWebEngineSettings.WebAttribute.ScreenCaptureEnabled, True)
-        browser.settings().setAttribute(QtWebEngineCore.QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, True)
-        browser.settings().setAttribute(QtWebEngineCore.QWebEngineSettings.WebAttribute.ScrollAnimatorEnabled, True)
-        browser.settings().setAttribute(QtWebEngineCore.QWebEngineSettings.WebAttribute.HyperlinkAuditingEnabled, True)
-        browser.settings().setAttribute(QtWebEngineCore.QWebEngineSettings.WebAttribute.FocusOnNavigationEnabled, True)
-        browser.settings().setAttribute(QtWebEngineCore.QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard, True)
-        browser.settings().setAttribute(QtWebEngineCore.QWebEngineSettings.WebAttribute.JavascriptCanPaste, True)
-        browser.settings().setAttribute(QtWebEngineCore.QWebEngineSettings.WebAttribute.ScreenCaptureEnabled, True)
-        browser.settings().setAttribute(QtWebEngineCore.QWebEngineSettings.WebAttribute.DnsPrefetchEnabled, True)
-        browser.settings().setAttribute(QtWebEngineCore.QWebEngineSettings.WebAttribute.BackForwardCacheEnabled, True)
+        settings = browser.settings()
+        attr = QtWebEngineCore.QWebEngineSettings.WebAttribute
+        for flag in [
+            attr.PlaybackRequiresUserGesture,
+            attr.PluginsEnabled,
+            attr.ScreenCaptureEnabled,
+            attr.FullScreenSupportEnabled,
+            attr.ScrollAnimatorEnabled,
+            attr.HyperlinkAuditingEnabled,
+            attr.FocusOnNavigationEnabled,
+            attr.JavascriptCanAccessClipboard,
+            attr.JavascriptCanPaste,
+            attr.DnsPrefetchEnabled,
+            attr.BackForwardCacheEnabled,
+        ]: settings.setAttribute(flag, True)
 
-        browser.setUrl(qurl.setScheme(qurl.scheme() or 'http') if url else QtCore.QUrl.fromLocalFile(os.path.join(HTML, 'home.html')))
+        browser.setUrl(qurl)
 
-    def close_tab(self, i):
+
+    def close_tab(self, i=None):
         if self.tabs.count() == 1:
             self.tabs.currentWidget().setUrl(QtCore.QUrl.fromLocalFile(os.path.join(HTML, 'home.html')))
         else:
-            self.tabs.removeTab(i)
+            self.tabs.removeTab(i if i is not None else self.tabs.currentIndex())
 
     def navigate_to_url(self):
         url = self.url_bar.text()
@@ -478,31 +541,49 @@ class MainWindow(QtWidgets.QMainWindow):
             url = f"https://www.google.com/search?q={url}"
 
         match url.replace('://', ':'):
-            case "chrome:dino": url = QtCore.QUrl.fromLocalFile(os.path.join(HTML, 'snake.html')).toString()
-            case "webx:snake": url = QtCore.QUrl.fromLocalFile(os.path.join(HTML, 'snake.html')).toString()
-            case "webx:home": url = QtCore.QUrl.fromLocalFile(os.path.join(HTML, 'home.html')).toString()
+            case "chrome:snake":
+                qurl = QtCore.QUrl.fromLocalFile(os.path.join(HTML, 'snake.html')).toString()
+            case "chrome:dino":
+                qurl = QtCore.QUrl.fromLocalFile(os.path.join(HTML, 'snake.html')).toString()
+            case "webx:snake":
+                qurl = QtCore.QUrl.fromLocalFile(os.path.join(HTML, 'snake.html')).toString()
+            case "webx:home":
+                qurl = QtCore.QUrl.fromLocalFile(os.path.join(HTML, 'home.html')).toString()
+            case "webx:start":
+                qurl = QtCore.QUrl.fromLocalFile(os.path.join(HTML, 'home.html')).toString()
+            case "webx:startpage":
+                qurl = QtCore.QUrl.fromLocalFile(os.path.join(HTML, 'home.html')).toString()
+            case _:
+                qurl = QtCore.QUrl(url)
 
-        if QtCore.QUrl(url).scheme() == 'webx': url = 'chrome'+url.removeprefix('webx')
-        if not QtCore.QUrl(url).scheme(): url = 'http:'+url
+        match qurl.scheme():
+            case 'webx':
+                qurl.setScheme('chrome')
+            case '':
+                qurl.setScheme('http')
 
         # Set Url
-        self.tabs.currentWidget().setUrl(QtCore.QUrl(url))
-        self.update_url_bar(QtCore.QUrl(url), self.tabs.currentWidget())
+        self.tabs.currentWidget().setUrl(qurl)
+        self.update_url_bar(qurl, self.tabs.currentWidget())
 
     def update_url_bar(self, qurl, browser):
         url = qurl.toString()
-        if QtCore.QUrl(url).scheme() == 'chrome': url = 'webx'+url.removeprefix('chrome')
-        if browser != self.tabs.currentWidget(): return
+        if browser != self.tabs.currentWidget():
+            return
+        if qurl.scheme() == 'chrome':
+            url = 'webx'+url.removeprefix('chrome')
         self.url_bar.setText(BUILTIN_PATHS.get(qurl, url))
 
     def load_finished(self, i, browser):
-        title = browser.page().title()
         qurl = browser.url()
+        title = browser.page().title()
+
         # Set tab Text
         self.tabs.setTabText(i, title)
 
         # Add to history
-        if qurl in BUILTIN_PATHS or qurl.scheme() in ('chrome', 'view-source') or not is_connected(): return
+        if qurl in BUILTIN_PATHS or qurl.scheme() in ('chrome', 'view-source') or not is_connected():
+            return
         history.insert(0, [title, qurl.toString()])
         if len(history) > 100: history.pop()
         write(history)
@@ -510,20 +591,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def open_file(self):
         ext_filter = "HTML Files (*.htm *.html *.xhtml) ;; PDF Files (*.pdf) ;; All Files (*)"
         filepath = QtWidgets.QFileDialog.getOpenFileUrl(self, "Open File", os.path.expanduser('~'), ext_filter)[0].toString()
-        if filepath: self.new_tab(filepath)
-    
-    @staticmethod
-    def about():
-        about_window = QtWidgets.QMessageBox()
-        about_window.setWindowTitle("About WebX")
-        about_window.setText('\n'.join([
-            f"WebX Version {VERSION}",
-            "",
-            "© Orlando Huang. All rights reserved.",
-        ]))
-        about_window.setIcon(QtWidgets.QMessageBox.Icon.Information)
-        about_window.setWindowIcon(QtGui.QIcon(WEBX))
-        about_window.exec()
+        if filepath:
+            self.new_tab(filepath)
 
     def bookmark_current(self):
         name, ok = QtWidgets.QInputDialog.getText(self, "Bookmark Name", "Name:")
@@ -548,7 +617,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 else:
                     break
         menu.addSeparator()
-        add_current = QtGui.QAction("Bookmark Current Site", self)
+        add_current = QtGui.QAction("Bookmark Current Site", self, shortcut="Ctrl+D")
         view = QtGui.QAction(f"Manage {'Bookmarks' if data is bookmarks else 'History'}", self)
         add_current.triggered.connect(self.bookmark_current)
         view.triggered.connect(lambda: self.table_window(data))
@@ -558,32 +627,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def table_window(self, data):
         global bookmarks_window, history_window, permissions_window
         if data is bookmarks:
-            if bookmarks_window:
-                bookmarks_window.show()
-                bookmarks_window.activateWindow()
-            else:
-                bookmarks_window = TableWindow(bookmarks, self)
+            bookmarks_window = TableWindow(bookmarks, self)
         elif data is history:
-            if history_window:
-                history_window.show()
-                history_window.activateWindow()
-            else:
-                history_window = TableWindow(history, self)
+            history_window = TableWindow(history, self)
         elif data is permissions:
-            if permissions_window:
-                permissions_window.show()
-                permissions_window.activateWindow()
-            else:
-                permissions_window = TableWindow(permissions, self)
+            permissions_window = TableWindow(permissions, self)
 
     def check_updates(self):
-        self.check_updates_window = CheckUpdateWindow()
-
-    def maximize(self):
-        if self.isMaximized():
-            self.showNormal()
-        else:
-            self.showMaximized()
+        global check_updates_window
+        check_updates_window = CheckUpdateWindow()
 
     def handle_fullscreen(self, request):
         request.accept()
@@ -599,71 +651,56 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tabs.tabBar().show()
             self.showMaximized() if maximized else self.showNormal()
 
-    @staticmethod
-    def download_file(item: QtWebEngineCore.QWebEngineDownloadRequest):
-        def create_download_window():
-            download_window = DownloadWindow(name, size)
-            item.receivedBytesChanged.connect(lambda: download_window.update_size(item.receivedBytes()))
-            item.isFinishedChanged.connect(lambda: download_window.set_done())
 
-        name = item.suggestedFileName()
-        size = item.totalBytes()
-        dialog = QtWidgets.QMessageBox()
-        dialog.setIcon(QtWidgets.QMessageBox.Icon.Question)
-        dialog.setWindowIcon(QtGui.QIcon(WEBX))
-        dialog.setWindowTitle(f"Download File: {name}")
-        dialog.setText(f"What would you like to do with {name} (Size: {byte_to_string(size)})")
-
-        dialog.addButton("Save", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
-        dialog.addButton("Save As", QtWidgets.QMessageBox.ButtonRole.ActionRole)
-        dialog.addButton("Cancel", QtWidgets.QMessageBox.ButtonRole.RejectRole)
-        dialog.exec()
-
-        match dialog.clickedButton().text():
-            case "Save":
-                item.accept()
-                create_download_window()
-            case "Save As":
-                folder = QtWidgets.QFileDialog.getExistingDirectory(dialog, "Save To", item.downloadDirectory())
-                if folder:
-                    item.setDownloadDirectory(folder)
-                    item.accept()
-                    create_download_window()
-
-
-# Create Argument Parser
-parser = argparse.ArgumentParser(
-    description="WebX Browser",
-    epilog="Only takes one argument."
-)
-
-# Process Arguments
-if len(sys.argv) > 2: sys.exit("\033[31mERROR: Only takes one argument!\033[0m")
-parser.add_argument('-v', '--version', action='store_true', help="show version")
-parser.add_argument('url', nargs=argparse.OPTIONAL, help="url of first tab")
+# Parse Arguments
+parser = argparse.ArgumentParser(description="WebX Browser")
+group = parser.add_mutually_exclusive_group()
+group.add_argument('-v', '--version', action='store_true', help="show version")
+group.add_argument('url', nargs='?', help="url of first tab")
 args = parser.parse_args()
-if args.version: print(f"WebX {VERSION}"); sys.exit()
 
+if args.version:
+    about()
+    sys.exit()
+
+# Create lock file so that it creates new window if ran again
 try:
     lock_file = open(os.path.join(DATA, 'webx.lock'), 'w')
     portalocker.lock(lock_file, portalocker.LOCK_EX | portalocker.LOCK_NB)
 except portalocker.exceptions.LockException:
-    open(os.path.join(DATA, 'status'), 'w').write(f'newwindow {args.url or ''}')
+    open(os.path.join(DATA, 'status'), 'w').write(f"new_window {args.url or ''}")
     sys.exit()
 
+# Observe and create new window if told to
 observer = Observer()
-signals = Signals()
-
 observer.schedule(StatusFileHandler(), path=DATA, recursive=False)
 observer.start()
 
+# Connects the signal to create new window
+signals = Signals()
 signals.create_window.connect(lambda url: MainWindow(url))
+
+# Initialize Browser Profile
+profile = QtWebEngineCore.QWebEngineProfile('WebX')
+profile.setPersistentStoragePath(DATA)
+profile.downloadRequested.connect(download_file)
+
+# Initialize Variables
+with open(os.path.join(DATA, 'bookmarks.csv'), 'r', newline='', encoding='utf-8') as f:
+    bookmarks = list(csv.reader(f))[1:]
+with open(os.path.join(DATA, 'history.csv'), 'r', newline='', encoding='utf-8') as f:
+    history = list(csv.reader(f))[1:][::-1]
+permissions = [
+    [p.origin().toString(), p.permissionType().name, p.state().name]
+    for p in profile.listAllPermissions()
+]
 
 # Run App
 app.setApplicationName("WebX")
-app.setWindowIcon(QtGui.QIcon(os.path.join(ICONS, 'webx.py')))
+app.setWindowIcon(QtGui.QIcon(os.path.join(ICONS, 'WebX.png')))
 MainWindow(args.url)
 app.exec()
 
+# Remove Lock File
 lock_file.close()
 os.remove(os.path.join(DATA, 'webx.lock'))

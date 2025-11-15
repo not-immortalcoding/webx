@@ -25,6 +25,5 @@ mv bin/main.exe bin/WebX.exe
 mkdir bin/data
 echo "Name,Url" > bin/data/bookmarks.csv
 echo "Title,Url" > bin/data/history.csv
-echo "Origin,Permission,State" > bin/data/permissions.csv
 cp -r src/html src/icons bin
 mv -n upgrade.dist/* bin
