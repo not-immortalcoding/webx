@@ -11,9 +11,10 @@ import os
 import sys
 import csv
 import socket
-import requests
 import argparse
 import subprocess
+
+import requests
 import portalocker
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -24,6 +25,8 @@ from PySide6 import (
     QtWebEngineCore,
     QtGui
 )
+
+
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu"
 
 app = QtWidgets.QApplication(sys.argv)
@@ -33,6 +36,7 @@ THEME = 'dark' if app.palette().color(QtGui.QPalette.ColorRole.Window).value()<1
 WEBX = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'icons', 'WebX.png')
 ICONS = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'icons', THEME)
 HTML = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'html')
+UPGRADE = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'upgrade.exe')
 if '__compiled__' in globals():
     DATA = os.path.join(os.getenv('AppData'), 'WebX')
 else:
@@ -47,7 +51,7 @@ BUILTIN_PATHS = {
 
 
 def upgrade():
-    subprocess.Popen([os.path.join(os.path.dirname(os.path.realpath(__file__)), 'upgrade.exe')])
+    subprocess.Popen([UPGRADE])
     sys.exit()
 
 
