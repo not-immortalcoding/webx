@@ -7,7 +7,6 @@
 # nuitka-project: --windows-console-mode=disable
 # nuitka-project: --windows-icon-from-ico=src/icons/WebX.ico
 
-
 import os
 import tempfile
 import requests
@@ -21,11 +20,16 @@ LATEST = "https://raw.githubusercontent.com/not-immortalcoding/webx/refs/heads/m
 
 def byte_to_string(byte):
     match byte:
-        case b if b == 0: return "?"
-        case b if b < 1024: return f"{byte} B"
-        case b if b < 1024 ** 2: return f"{byte / 1024:.2f} KB"
-        case b if b < 1024 ** 3: return f"{byte / (1024 ** 2):.2f} MB"
-        case _: return f"{byte / (1024 ** 3):.2f} GB"
+        case b if b == 0:
+            return "?"
+        case b if b < 1024:
+            return f"{byte} B"
+        case b if b < 1024 ** 2:
+            return f"{byte / 1024:.2f} KB"
+        case b if b < 1024 ** 3:
+            return f"{byte / (1024 ** 2):.2f} MB"
+        case _:
+            return f"{byte / (1024 ** 3):.2f} GB"
 
 
 def download():

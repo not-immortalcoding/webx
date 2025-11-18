@@ -32,6 +32,9 @@ os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu"
 app = QtWidgets.QApplication(sys.argv)
 bookmarks_window = history_window = permissions_window = check_updates_window = None
 
+VERSION = 0.1
+LATEST_VERSION_URL = "https://raw.githubusercontent.com/not-immortalcoding/webx/refs/heads/main/latest_version.txt"
+
 THEME = 'dark' if app.palette().color(QtGui.QPalette.ColorRole.Window).value()<128 else 'light'
 WEBX = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'icons', 'WebX.png')
 ICONS = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'icons', THEME)
@@ -42,8 +45,6 @@ if '__compiled__' in globals():
 else:
     DATA = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data')
 
-VERSION = 0.1
-LATEST_VERSION_URL = "https://raw.githubusercontent.com/not-immortalcoding/webx/refs/heads/main/latest_version.txt"
 BUILTIN_PATHS = {
     QtCore.QUrl.fromLocalFile(os.path.join(HTML, 'home.html')): '',
     QtCore.QUrl.fromLocalFile(os.path.join(HTML, 'snake.html')): 'webx://snake'
@@ -121,7 +122,7 @@ def download_file(item):
     def create_download_window():
         download_window = DownloadWindow(name, size)
         item.receivedBytesChanged.connect(lambda: download_window.update_size(item.receivedBytes()))
-        item.isFinishedChanged.connect(lambda: download_window.set_done())
+        item.isFinishedChanged.connect(download_window.set_done)
 
     name = item.suggestedFileName()
     size = item.totalBytes()
@@ -210,7 +211,7 @@ class DownloadWindow(QtWidgets.QWidget):
         self.done = False
         self.name = name
         self.total_size = byte_to_string(total_size)
-        self.label = QtWidgets.QLabel(f"{self.name} downloaded 0 B/{self.total_size}")
+        self.label = QtWidgets.QLabel(f"{name} downloaded 0 B/{total_size}")
 
         self.label.setFont(QtGui.QFont(QtGui.QFont().family(), 12, QtGui.QFont.Weight.Medium, False))
         root.addWidget(self.label)
