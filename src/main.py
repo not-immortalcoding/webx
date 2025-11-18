@@ -127,6 +127,7 @@ def download_file(item):
     name = item.suggestedFileName()
     size = item.totalBytes()
     dialog = QtWidgets.QMessageBox()
+    
     dialog.setIcon(QtWidgets.QMessageBox.Icon.Question)
     dialog.setWindowIcon(QtGui.QIcon(WEBX))
     dialog.setWindowTitle(f"Download File: {name}")
